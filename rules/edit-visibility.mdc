@@ -1,0 +1,58 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-11-18T07:09:08.243Z
+provider: 
+---
+
+# 改文件流程（2026-11-18 v3.3 · toolbox + bridge-edit，保加密）
+
+## 0. 授权与模式
+- 未获明确 R1 授权词不得写文件/改代码。授权词白名单：「操作/ 配置/ 创建/ 改 / 修改 / 实现 / 试试 / 可以 / 动手 / 执行 / 调一下」。描述性语句一律不算授权。
+- 每轮回复首行单独标注模式：`[只读]` 或 `[已授权改码]`。拿不准标 `[只读]`；标注与实际动作不符时按只读处理。
+- 分析轮禁止任何写操作（write / replace / byte-edit / 临时脚本 / 规则文件写入）。提出方案必须是单独一句「要改 X 吗？」，等下一轮授权。
+- 改动前在提案中说明：改哪个文件、改什么、为什么；不再单独输出自检行。
+- 收到「取消」后，必须先读文件确认是否已部分执行，并明确报告「已改 / 未改」。
+- PID / 阈值 / 增益等参数同样需要 R1 授权，不能通过「你在 Watch 改就行」绕过。
+
+## 0.2 上下文保鲜
+- 新会话启动 / 上下文压缩后，动手前确认 project-onboarding、tools.md、edit-visibility.mdc 已在上下文；若缺失先重读。
+- 本文件只保留每次动作必须生效的硬约束和最小命令形式；tools.md 是详细参数源，仅在上下文缺失或参数不确定时读取，不作为每次必读项。
+
+## 1. 源码读写通道
+- 真实工程源码一律通过 `python D:\Codebuddy\toolbox\bridge-edit.py`（read / replace / write / byte-edit）读写。
+- bridge-edit 用 python 直读直写：读=内存解密，写=重新加密落盘。
+- 真实工程路径以 `/ping` 的 roots 为准；`D:\plain_view` 已废弃，不读不写。
+- 禁止用编辑工具直接改真实工程；禁止 node / 桥 `/write` / powershell / cmd 写工程。桥 `/read`、`/raw` 只用于字节/哈希，不用于源码。
+- 源码检索用 `project-index.py --around` 或 bridge-edit read，不用密文副本。
+
+## 2. 文本/字节改动硬步骤
+- 文本一律 UTF-8 提供，bridge-edit 内部转 GBK 字节级替换；禁止 GBK 解码再编码。临时 old/new 文件用 LF 行尾。
+- 连续文本改动：
+  - 大段 `old` / `new` 必须由 `snippet-gen.py` 生成，禁止 PowerShell 反引号 `n 手工拼命令行，禁止每次现写一次性脚本。
+  - 最小流程：`snippet-gen.py lines --file <path> --editor <json> --out-old <old> --out-new <new>`，随后 `bridge-edit.py replace <path> --old-file <old> --new-file <new> --dry --expect 1`，命中确认后再去掉 `--dry` 写入。
+  - 短文本可用 `--old` / `--new`，但仍必须 `--dry --expect 1`。
+- 分散字节改动：
+  - 用 `bridge-edit.py byte-edit <path> --plan <json> [--expect N] --dry`，校验 old / 范围 / 重叠 / expect 后写入。
+  - plan 项支持 `{"offset":123,"old":"0x00","new":"0x0F"}` 或 `{"anchor":"...", "rel":120, "old":"0x00", "new":"0x0F"}`。
+- 一次只发一条写命令，禁止 foreach 批量写；多处 `replace` 逐条独立执行。`byte-edit` 是单条命令批量字节修改，允许。
+- 写后以 `[VERIFY OK]` 为准（含快照、SHA256 回读、延迟复查与逐行 diff）。不再手动回读关键行，不再跑 `dlp.py status` / `--atrest`。
+- 无快照 = 没改完；异常立即停并报告。
+
+## 3. DLP 信任模型
+- 受信进程：python.exe / git.exe / rg.exe，读=解密明文，写=重新加密落盘。
+- 不受信：node / powershell / cmd，读=密文（`%TSD-Header`），写=明文落盘，禁止。
+- 结论：源码读写只走 bridge-edit；写后只看 `[VERIFY OK]`，不再单独查加密状态。
+
+## 4. 汇报格式
+- 每次改完代码 / 落盘写文件后，回复必须写：「经 bridge-edit 改 <文件> <改动摘要>」。
+- 必须附一个 diff 卡片：用「三个反引号 + diff」标记，只写本次改动的 `-` / `+` 行，不贴整文件。多文件按文件分块。
+- 完整批次对比由 VSCode agent-snap 侧栏展示，不在对话里贴整文件大段 diff。
+
+## 5. 卡住时的唯一正确动作
+- `--dry` 命中不符、`[VERIFY FAIL]`、SHA256 异常、编码异常 → 说明现象 + 给 2~3 个方案 + 等指令。
+- 禁止改用其它脚本、其它路径、直接写真实工程来「先把事办成」。
+
+## 6. 诚实性
+- 实测 / 推算 / 未知三类必须标注，没数据不许补数字。
