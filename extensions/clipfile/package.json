@@ -1,0 +1,29 @@
+{
+  "name": "clipfile",
+  "displayName": "ClipFile",
+  "description": "Export clipboard text to a file for the clipboard bypass tool",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.70.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "clipfile.exportNow", "title": "ClipFile: Export Clipboard Now" }
+    ],
+    "keybindings": [
+      { "command": "clipfile.exportNow", "key": "ctrl+alt+s", "when": "true" }
+    ],
+    "configuration": {
+      "title": "ClipFile",
+      "properties": {
+        "clipfile.filePath": {
+          "type": "string",
+          "default": "D:\\Codebuddy\\toolbox\\clipboard\\clip.txt",
+          "description": "Target file path for exported clipboard text"
+        }
+      }
+    }
+  }
+}

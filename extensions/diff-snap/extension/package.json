@@ -1,0 +1,76 @@
+{
+  "name": "diff-snap",
+  "displayName": "改动对比",
+  "description": "给文件打快照，随时并排对比改动前后，两侧均可编辑",
+  "version": "0.0.4",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "diffSnap.mark",
+        "title": "打点：记录当前文件为“改动前”",
+        "category": "改动对比",
+        "icon": "$(bookmark)"
+      },
+      {
+        "command": "diffSnap.compare",
+        "title": "对比：最近一次打点 vs 当前",
+        "category": "改动对比",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "diffSnap.clear",
+        "title": "清空当前文件的全部打点",
+        "category": "改动对比",
+        "icon": "$(trash)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diffSnapSidebar",
+          "title": "改动对比",
+          "icon": "media/diff.svg"
+        }
+      ]
+    },
+    "views": {
+      "diffSnapSidebar": [
+        {
+          "id": "diffSnapView",
+          "name": "打点记录"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "diffSnap.mark",
+          "when": "view == diffSnapView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "改动对比",
+      "properties": {
+        "diffSnap.keep": {
+          "type": "number",
+          "default": 5,
+          "description": "每个文件保留多少个打点快照"
+        }
+      }
+    }
+  }
+}

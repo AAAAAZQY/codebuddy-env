@@ -1,0 +1,4 @@
+@echo off
+set ELECTRON_RUN_AS_NODE=1
+set BRIDGE_PORT=37821
+"D:\Codebuddy\CodeBuddy CN\CodeBuddy CN.exe" "D:\Codebuddy\toolbox\bridge.js" "d:\aMyProject\Project\22b2\GX\new\22b2\ptz_source_code\source_code" "d:\aMyProject\Project\22b2\SST\22b2\ptz_source_code\source_code" "d:\aMyProject\Project\22b2\22bmain\new\22b2\ptz_source_code\source_code" "d:\aMyProject\Project\55KS   (BS7)\bs7\55ks\source_code_ptz\source_code" "d:\aMyProject\Project\66D\main\66d\ptz_source_code" "d:\aMyProject\Project\MIS-T160\mian\mis-t160\ptz_source_code\source_code" "d:\aMyProject\Project\MIS-T160\XH\mis-t160\ptz_source_code\source_code" "d:\aMyProject\Project\66T\LAY\66t\ptz_source_code\source_code" "d:\aMyProject\Project\CD11\main_v2\cd11\source_code_ptz\source_code" "d:\aMyProject\Project\H260a\main\h260a\ptz_source_code\source_code" "d:\aMyProject\Project\S100\s100SM\s100new\s100\source_code_ptz\source_code" "d:\aMyProject\Project\S100\XA\s100\source_code_ptz\source_code"

@@ -1,0 +1,6 @@
+src=D:\Codebuddy\tools\ext-name15-fixed.js bytes=33909 md5=c75eed6e565126485cba759c30209e66
+syntax=OK
+backup=D:\Codebuddy\tools\extension.js.bak-2026-10-20T10-16-25-577Z bytes=33522 md5=a82ac76431156f51c51b61ee852ff22d
+dst=C:\Users\myages2026\.vscode\extensions\local.filebridge-0.0.1\extension.js bytes=33909 md5=c75eed6e565126485cba759c30209e66
+roundtrip-same=true
+DEPLOY-OK

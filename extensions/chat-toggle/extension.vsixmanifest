@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="chat-toggle" Version="0.0.1" Publisher="local" />
+    <DisplayName>对话开关</DisplayName>
+    <Description xml:space="preserve">从活动栏图标或状态栏按钮一键显示/隐藏对话面板</Description>
+    <Tags>chat,layout,sidebar</Tags>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
+  </Installation>
+  <Dependencies />
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+  </Assets>
+</PackageManifest>

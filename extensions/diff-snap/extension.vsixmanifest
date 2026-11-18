@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="diff-snap" Version="0.0.4" Publisher="local" />
+    <DisplayName>改动对比</DisplayName>
+    <Description xml:space="preserve">给文件打快照，随时并排对比改动前后，两侧均可编辑</Description>
+    <Tags>diff,snapshot,compare</Tags>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
+  </Installation>
+  <Dependencies />
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+  </Assets>
+</PackageManifest>

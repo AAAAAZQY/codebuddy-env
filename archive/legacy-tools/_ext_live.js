@@ -1,0 +1,899 @@
+const vscode = require('vscode');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { spawn, execFileSync } = require('child_process');
+
+const HOST = '127.0.0.1';
+const PORT = 37821;
+const MAX_BODY = 16 * 1024 * 1024;
+const MAX_SCAN = 8 * 1024 * 1024;
+const MAX_MIRROR = 80 * 1024 * 1024;
+const BUILD = 'name-15';
+const MIRROR_ROOT = 'D:\\plain_view';
+const SKIP_DIRS = new Set(['.git', '.svn', 'node_modules', '.codebuddy', '.vscode']);
+
+/* ---------------- HTML viewer ---------------- */
+
+const VIEW_HTML = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Code Viewer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;height:100vh;overflow:hidden;font:13px/1.45 ui-monospace,Consolas,monospace;background:#1e1e1e;color:#d4d4d4}
+#top{display:flex;height:34px;align-items:center;gap:8px;padding:0 10px;background:#252526;border-bottom:1px solid #333;font-size:12px;color:#9cdcfe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#main{display:flex;height:calc(100vh - 34px)}
+#tree{width:300px;min-width:180px;overflow:auto;border-right:1px solid #333;padding:6px 0;background:#181818}
+#code{flex:1;overflow:auto;padding:8px 12px;white-space:pre;tab-size:4}
+.row{cursor:pointer;white-space:nowrap;padding:1px 6px}
+.row:hover{background:#2a2d2e}
+.d{color:#4ec9b0}
+.f{color:#cccccc}
+#hint{color:#666;padding:10px}
+</style></head><body>
+<div id="top">选择左侧文件</div>
+<div id="main"><div id="tree"></div><div id="code"><div id="hint">从左侧选择一个文件</div></div></div>
+<script>
+var ROOT = __ROOT__;
+var treeEl = document.getElementById('tree');
+var codeEl = document.getElementById('code');
+var topEl = document.getElementById('top');
+
+function join(dir, name) {
+  var last = dir.slice(-1);
+  var sep = (last === '\\\\' || last === '/') ? '' : '\\\\';
+  return dir + sep + name;
+}
+
+async function list(dir) {
+  try {
+    var r = await fetch('/list?p=' + encodeURIComponent(dir));
+    var j = await r.json();
+    return j.ok ? j.entries : [];
+  } catch (e) { return []; }
+}
+
+async function renderDir(dir, container, depth) {
+  var ents = await list(dir);
+  ents.sort(function (a, b) { return (b.d - a.d) || a.n.localeCompare(b.n); });
+  for (var i = 0; i < ents.length; i++) {
+    (function (e) {
+      var full = join(dir, e.n);
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.style.paddingLeft = (6 + depth * 12) + 'px';
+      if (e.d) {
+        row.classList.add('d');
+        row.textContent = '▸ ' + e.n;
+        var kids = document.createElement('div');
+        kids.style.display = 'none';
+        var loaded = false;
+        row.onclick = async function () {
+          if (!loaded) { loaded = true; await renderDir(full, kids, depth + 1); }
+          var open = kids.style.display !== 'none';
+          kids.style.display = open ? 'none' : 'block';
+          row.textContent = (open ? '▸ ' : '▾ ') + e.n;
+        };
+        container.appendChild(row);
+        container.appendChild(kids);
+      } else {
+        row.classList.add('f');
+        row.textContent = e.n;
+        row.onclick = function () { openFile(full); };
+        container.appendChild(row);
+      }
+    })(ents[i]);
+  }
+}
+
+async function openFile(p) {
+  topEl.textContent = p;
+  try {
+    var r = await fetch('/raw?p=' + encodeURIComponent(p));
+    var buf = await r.arrayBuffer();
+    var txt;
+    try { txt = new TextDecoder('gbk').decode(buf); }
+    catch (e) { txt = new TextDecoder('utf-8').decode(buf); }
+    var lines = txt.split(/\\r?\\n/);
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      out.push(String(i + 1).padStart(5, ' ') + '  ' + lines[i]);
+    }
+    codeEl.textContent = out.join('\\n');
+    codeEl.scrollTop = 0;
+  } catch (e) {
+    codeEl.textContent = '读取失败: ' + e;
+  }
+}
+
+renderDir(ROOT, treeEl, 0);
+</script></body></html>`;
+
+/* ---------------- http helpers ---------------- */
+
+function readBody(req) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+        req.on('data', (c) => {
+            size += c.length;
+            if (size > MAX_BODY) {
+                reject(new Error('body too large'));
+                req.destroy();
+                return;
+            }
+            chunks.push(c);
+        });
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+    });
+}
+
+function send(res, code, obj) {
+    const s = JSON.stringify(obj);
+    res.writeHead(code, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(s)
+    });
+    res.end(s);
+}
+
+function sendRaw(res, buf) {
+    res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': buf.length,
+        'cache-control': 'no-store'
+    });
+    res.end(buf);
+}
+
+async function walk(dir, out, depth) {
+    if (depth > 16) return;
+    let ents;
+    try {
+        ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (e) {
+        return;
+    }
+    for (const e of ents) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+            if (SKIP_DIRS.has(e.name)) continue;
+            await walk(full, out, depth + 1);
+        } else if (e.isFile()) {
+            try {
+                const st = await fs.promises.stat(full);
+                if (st.size <= MAX_SCAN) out.push(full);
+            } catch (e) { /* ignore */ }
+        }
+    }
+}
+
+function entrySize(full) {
+    try {
+        return fs.statSync(full).size;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function viewerRoot() {
+    const roots = (vscode.workspace.workspaceFolders || []).filter((f) => f.uri.scheme === 'file');
+    return roots.length ? roots[0].uri.fsPath : process.cwd();
+}
+
+function handler() {
+    return async (req, res) => {
+        try {
+            const u = new URL(req.url, 'http://' + HOST);
+            const p = u.searchParams.get('p');
+            switch (u.pathname) {
+                case '/':
+                case '/view': {
+                    const html = VIEW_HTML.replace('__ROOT__', JSON.stringify(viewerRoot()));
+                    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+                    return res.end(html);
+                }
+                case '/ping':
+                    return send(res, 200, {
+                        ok: true, pid: process.pid, vscode: vscode.version, build: BUILD,
+                        pairs: mirrorPairs()
+                    });
+                case '/raw': {
+                    if (!p) return send(res, 400, { ok: false, err: 'missing p' });
+                    return sendRaw(res, await fs.promises.readFile(p));
+                }
+                case '/read': {
+                    if (!p) return send(res, 400, { ok: false, err: 'missing p' });
+                    const buf = await fs.promises.readFile(p);
+                    return send(res, 200, { ok: true, size: buf.length, data: buf.toString('base64') });
+                }
+                case '/write': {
+                    if (!p) return send(res, 400, { ok: false, err: 'missing p' });
+                    const raw = await readBody(req);
+                    const data = Buffer.from(raw.toString('utf8').trim(), 'base64');
+                    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+                    await fs.promises.writeFile(p, data);
+                    return send(res, 200, { ok: true, size: data.length });
+                }
+                case '/list': {
+                    if (!p) return send(res, 400, { ok: false, err: 'missing p' });
+                    const ents = await fs.promises.readdir(p, { withFileTypes: true });
+                    return send(res, 200, {
+                        ok: true,
+                        entries: ents.map((e) => ({
+                            n: e.name,
+                            d: e.isDirectory(),
+                            s: entrySize(path.join(p, e.name))
+                        }))
+                    });
+                }
+                case '/find': {
+                    const dir = u.searchParams.get('d');
+                    const q = u.searchParams.get('q');
+                    const glob = u.searchParams.get('g');
+                    if (!dir || !q) return send(res, 400, { ok: false, err: 'missing d/q' });
+                    let re;
+                    try {
+                        re = new RegExp(q, 'i');
+                    } catch (e) {
+                        return send(res, 400, { ok: false, err: 'bad regex' });
+                    }
+                    const gre = glob ? new RegExp(glob.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i') : null;
+                    const files = [];
+                    await walk(dir, files, 0);
+                    const hits = [];
+                    let scanned = 0;
+                    for (const f of files) {
+                        if (gre && !gre.test(f)) continue;
+                        let txt;
+                        try {
+                            txt = await fs.promises.readFile(f, 'utf8');
+                        } catch (e) {
+                            continue;
+                        }
+                        if (txt.indexOf('\u0000') >= 0) continue;
+                        scanned++;
+                        const lines = txt.split(/\r?\n/);
+                        for (let i = 0; i < lines.length; i++) {
+                            if (re.test(lines[i])) {
+                                hits.push({ f: f, l: i + 1, t: lines[i].slice(0, 300) });
+                                if (hits.length >= 500) break;
+                            }
+                        }
+                        if (hits.length >= 500) break;
+                    }
+                    return send(res, 200, { ok: true, scanned: scanned, hits: hits });
+                }
+                default:
+                    return send(res, 404, { ok: false, err: 'unknown endpoint' });
+            }
+        } catch (e) {
+            return send(res, 500, { ok: false, err: String((e && e.message) || e) });
+        }
+    };
+}
+
+/* ---------------- plain: filesystem (served by extension host) ---------------- */
+
+const FILE = 1;
+const DIR = 2;
+
+function toLocal(uri) {
+    let p = uri.path;
+    if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1);
+    return p.replace(/\//g, path.sep);
+}
+
+function fromLocal(fsPath) {
+    return vscode.Uri.parse('plain:/' + fsPath.replace(/\\/g, '/').replace(/^\//, ''));
+}
+
+class PlainFileSystemProvider {
+    constructor() {
+        this.emitter = new vscode.EventEmitter();
+        this.onDidChangeFile = this.emitter.event;
+    }
+    watch() {
+        return { dispose() { } };
+    }
+    async stat(uri) {
+        const st = await fs.promises.stat(toLocal(uri));
+        return {
+            type: st.isDirectory() ? DIR : FILE,
+            ctime: st.ctimeMs,
+            mtime: st.mtimeMs,
+            size: st.size
+        };
+    }
+    async readDirectory(uri) {
+        const dir = toLocal(uri);
+        const ents = await fs.promises.readdir(dir, { withFileTypes: true });
+        return ents.map((e) => [e.name, e.isDirectory() ? DIR : FILE]);
+    }
+    async readFile(uri) {
+        return fs.promises.readFile(toLocal(uri));
+    }
+    async writeFile(uri, content) {
+        await fs.promises.writeFile(toLocal(uri), content);
+    }
+    async delete(uri, options) {
+        if (options && options.recursive) {
+            await fs.promises.rm(toLocal(uri), { recursive: true, force: true });
+        } else {
+            await fs.promises.unlink(toLocal(uri));
+        }
+    }
+    async rename(from, to) {
+        await fs.promises.rename(toLocal(from), toLocal(to));
+    }
+    async createDirectory(uri) {
+        await fs.promises.mkdir(toLocal(uri), { recursive: true });
+    }
+}
+
+/* ---------------- workspace helpers ---------------- */
+
+function localRoots() {
+    return (vscode.workspace.workspaceFolders || []).filter((f) => f.uri.scheme === 'file');
+}
+
+function realRoots() {
+    return localRoots().map((f) => f.uri.fsPath);
+}
+
+function realRoot() {
+    const r = realRoots();
+    return r.length ? r[0] : null;
+}
+
+const branchCache = new Map();
+
+function gitBranch(real) {
+    const now = Date.now();
+    const hit = branchCache.get(real);
+    if (hit && now - hit.at < 3000) return hit.value;
+    let b = '';
+    try {
+        b = execFileSync('git', ['-C', real, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+            encoding: 'utf8',
+            windowsHide: true,
+            timeout: 5000
+        }).trim();
+    } catch (e) {
+        b = '';
+    }
+    if (b === 'HEAD' || b === 'unknown') b = '';
+    branchCache.set(real, { at: now, value: b });
+    return b;
+}
+
+// ���1����git ����?������� 22b2 / 66d��������������� <����>-<���>-<����>
+const topCache = new Map();
+
+function gitTop(real) {
+    const now = Date.now();
+    const hit = topCache.get(real);
+    if (hit && now - hit.at < 3000) return hit.value;
+    let v = '';
+    try {
+        v = execFileSync('git', ['-C', real, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim();
+    } catch (e) {
+        v = '';
+    }
+    if (v) v = path.basename(v.replace(/[\\/]+$/, ''));
+    topCache.set(real, { at: now, value: v });
+    return v;
+}
+
+function sanitizeName(s) {
+    return String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_');
+}
+
+// 副本名 = <文件夹名>-<分支>，同名不同路径时追加路径哈希
+// ptz_source_code -> ptz ; power_source_code -> power ; 其它保持原名
+function shortName(base) {
+    let s = String(base).replace(/_source_code$/i, '').replace(/_code$/i, '');
+    s = s.replace(/^[_-]+|[_-]+$/g, '');
+    if (!s || /^(source|src)$/i.test(s)) return String(base);
+    return s;
+}
+
+const GENERIC_NAMES = /^(source_code|source|src|code|firmware|project|main|trunk)$/i;
+
+// 泛名（如 source_code）时向上取一级目录，例如 ptz_source_code\source_code -> ptz
+function boardName(real) {
+    const base = path.basename(real);
+    let s = shortName(base);
+    if (GENERIC_NAMES.test(base) || GENERIC_NAMES.test(s)) {
+        const parentBase = path.basename(path.dirname(real));
+        const parentShort = shortName(parentBase);
+        if (parentShort && !GENERIC_NAMES.test(parentShort)) s = parentShort;
+    }
+    return s;
+}
+
+function mirrorFor(real) {
+    const base = boardName(real);
+    const branch = gitBranch(real);
+    const tag = sanitizeName(gitTop(real) || '');
+    const parts = [];
+    if (tag) parts.push(tag);
+    if (branch) parts.push(sanitizeName(branch));
+    if (base && base.toLowerCase() !== tag.toLowerCase()) parts.push(base);
+    const root = parts.length ? parts.join('-') : sanitizeName(path.basename(real));
+    // 候选名：<分支>-<板子>，冲突时用 <分支>-<板子>@<上级目录名>
+    const candidates = [root, root + '@' + sanitizeName(path.basename(path.dirname(real)))];
+    for (const name of candidates) {
+        const dir = path.join(MIRROR_ROOT, name);
+        if (!fs.existsSync(dir)) return dir;
+        try {
+            const meta = JSON.parse(fs.readFileSync(path.join(dir, '.mirror-meta.json'), 'utf8'));
+            if (meta && meta.real && String(meta.real).toLowerCase() === real.toLowerCase()) return dir;
+        } catch (e) { /* 无 meta 或损坏，视为被其它工程占用 */ }
+    }
+    const h = require('crypto').createHash('md5').update(real.toLowerCase()).digest('hex').slice(0, 8);
+    return path.join(MIRROR_ROOT, root + '-' + h);
+}
+
+function mirrorPath() {
+    const real = realRoot();
+    return real ? mirrorFor(real) : null;
+}
+
+function mirrorPairs() {
+    return realRoots().map((real) => ({ real: real, mirror: mirrorFor(real) }));
+}
+
+function hasPlainFor(target) {
+    return (vscode.workspace.workspaceFolders || []).some(
+        (f) => f.uri.scheme === 'plain' && toLocal(f.uri).toLowerCase() === target.uri.fsPath.toLowerCase()
+    );
+}
+
+function addPlainRoot(log) {
+    const roots = localRoots();
+    if (!roots.length) return false;
+    const target = roots[0];
+    if (hasPlainFor(target)) return true;
+    const folders = vscode.workspace.workspaceFolders || [];
+    const ok = vscode.workspace.updateWorkspaceFolders(folders.length, 0, {
+        uri: fromLocal(target.uri.fsPath),
+        name: target.name + ' (plain)'
+    });
+    log.appendLine('add plain root => ' + ok);
+    return ok;
+}
+
+/* ---------------- plain writer (must run OUTSIDE the trusted process) ---------------- */
+
+const PS_WRITE_SCRIPT = [
+    "$ErrorActionPreference='Stop'",
+    '$raw=[Console]::In.ReadToEnd()',
+    '$items=$raw | ConvertFrom-Json',
+    '$n=0',
+    'foreach($i in $items){',
+    '  $d=Split-Path $i.p -Parent',
+    '  if($d -and -not (Test-Path $d)){ New-Item -ItemType Directory -Path $d -Force | Out-Null }',
+    '  [System.IO.File]::WriteAllBytes($i.p,[Convert]::FromBase64String($i.b64))',
+    '  $n++',
+    '}',
+    'Write-Output ("written=" + $n)'
+].join('\n');
+
+function writePlain(items, log) {
+    return new Promise((resolve) => {
+        if (!items.length) return resolve({ code: 0, out: 'empty' });
+        const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', PS_WRITE_SCRIPT], { windowsHide: true });
+        let out = '';
+        ps.stdout.on('data', (d) => { out += d.toString(); });
+        ps.stderr.on('data', (d) => { out += d.toString(); });
+        ps.on('error', (e) => {
+            log.appendLine('plain write spawn failed: ' + e.message);
+            resolve({ code: -1, out: e.message });
+        });
+        ps.on('close', (code) => resolve({ code: code, out: out.trim() }));
+        try {
+            ps.stdin.write(JSON.stringify(items));
+            ps.stdin.end();
+        } catch (e) {
+            log.appendLine('plain write stdin failed: ' + e.message);
+        }
+    });
+}
+
+async function buildMirror(log, real, mirror) {
+    if (!real || !mirror) {
+        log.appendLine('mirror: no local root');
+        return false;
+    }
+    const files = [];
+    await walk(real, files, 0);
+
+    const items = [];
+    let total = 0;
+    for (const f of files) {
+        try {
+            const buf = await fs.promises.readFile(f);
+            total += buf.length;
+            if (total > MAX_MIRROR) {
+                log.appendLine('mirror aborted: exceeds ' + MAX_MIRROR + ' bytes');
+                return false;
+            }
+            items.push({ p: path.join(mirror, path.relative(real, f)), b64: buf.toString('base64') });
+        } catch (e) { /* skip unreadable */ }
+    }
+
+    items.push({
+        p: path.join(mirror, '.mirror-meta.json'),
+        b64: Buffer.from(JSON.stringify({ real: real, branch: gitBranch(real), builtAt: new Date().toISOString() }, null, 2)).toString('base64')
+    });
+
+    const settings = path.join(mirror, '.vscode', 'settings.json');
+    items.push({
+        p: settings,
+        b64: Buffer.from(JSON.stringify({ 'files.encoding': 'gbk', 'files.autoGuessEncoding': false }, null, 2)).toString('base64')
+    });
+
+    const CHUNK = 25;
+    for (let i = 0; i < items.length; i += CHUNK) {
+        await writePlain(items.slice(i, i + CHUNK), log);
+    }
+    log.appendLine('mirror built: ' + items.length + ' files, ' + total + ' bytes -> ' + mirror);
+    return true;
+}
+
+/* ---------------- two-way sync ---------------- */
+
+function startSync(log, real, mirror) {
+    if (!real || !mirror || !fs.existsSync(mirror)) {
+        log.appendLine('sync: mirror missing ' + mirror);
+        return null;
+    }
+
+    const pending = new Map();
+
+    function skipped(rel) {
+        const s = String(rel);
+        if (s.indexOf('.mirror-meta') >= 0) return true;
+        const first = s.split(/[\\/]/)[0];
+        return SKIP_SYNC_NAMES.indexOf(first) >= 0;
+    }
+
+    async function syncFile(fromRoot, toRoot, rel, toMirror) {
+        const a = path.join(fromRoot, String(rel));
+        const b = path.join(toRoot, String(rel));
+        try {
+            const st = await fs.promises.stat(a);
+            if (!st.isFile()) return;
+            const buf = await fs.promises.readFile(a);
+            let same = false;
+            try {
+                same = (await fs.promises.readFile(b)).equals(buf);
+            } catch (e) { /* target missing */ }
+            if (same) return;
+            if (toMirror) {
+                await writePlain([{ p: b, b64: buf.toString('base64') }], log);
+            } else {
+                await fs.promises.mkdir(path.dirname(b), { recursive: true });
+                await fs.promises.writeFile(b, buf);
+            }
+            log.appendLine('synced ' + (toMirror ? '-> mirror ' : '-> real ') + rel);
+        } catch (e) {
+            log.appendLine('sync fail ' + rel + ': ' + ((e && e.message) || e));
+        }
+    }
+
+    function schedule(fromRoot, toRoot, rel, toMirror) {
+        const key = fromRoot + '|' + rel;
+        if (pending.has(key)) clearTimeout(pending.get(key));
+        pending.set(key, setTimeout(() => {
+            pending.delete(key);
+            syncFile(fromRoot, toRoot, rel, toMirror);
+        }, 700));
+    }
+
+    const watchers = [];
+    try {
+        watchers.push(fs.watch(mirror, { recursive: true }, (ev, rel) => {
+            if (!rel || skipped(rel)) return;
+            schedule(mirror, real, rel, false);
+        }));
+        watchers.push(fs.watch(real, { recursive: true }, (ev, rel) => {
+            if (!rel || skipped(rel)) return;
+            schedule(real, mirror, rel, true);
+        }));
+        log.appendLine('sync watchers started: ' + real + ' <-> ' + mirror);
+    } catch (e) {
+        log.appendLine('sync watch failed: ' + ((e && e.message) || e));
+    }
+
+    return {
+        close() {
+            for (const w of watchers) {
+                try { w.close(); } catch (e) { /* ignore */ }
+            }
+            for (const t of pending.values()) clearTimeout(t);
+            pending.clear();
+        }
+    };
+}
+
+let activeSyncs = [];
+let branchWatchers = [];
+
+function stopSync() {
+    for (const s of activeSyncs) {
+        try { s.close(); } catch (e) { /* ignore */ }
+    }
+    activeSyncs = [];
+}
+
+async function migrateLegacyMirror(log, real, mirror) {
+    if (fs.existsSync(mirror)) return;
+    let ents = [];
+    try {
+        ents = await fs.promises.readdir(MIRROR_ROOT, { withFileTypes: true });
+    } catch (e) {
+        return;
+    }
+    for (const e of ents) {
+        if (!e.isDirectory()) continue;
+        const cand = path.join(MIRROR_ROOT, e.name);
+        if (cand.toLowerCase() === mirror.toLowerCase()) continue;
+        try {
+            const meta = JSON.parse(await fs.promises.readFile(path.join(cand, '.mirror-meta.json'), 'utf8'));
+            if (meta && meta.real && String(meta.real).toLowerCase() === real.toLowerCase()) {
+                await fs.promises.rename(cand, mirror);
+                log.appendLine('migrated legacy mirror ' + e.name + ' -> ' + path.basename(mirror));
+                return;
+            }
+        } catch (err) { /* no meta, skip */ }
+    }
+}
+
+async function writeIndex(log, pairs) {
+    const lines = [];
+    lines.push('明文副本清单  ' + new Date().toLocaleString());
+    lines.push('');
+    lines.push('副本目录 | 真实工程 | 分支');
+    lines.push('----------------------------------------------------------');
+    for (const p of pairs) {
+        let exists = false;
+        try { exists = fs.existsSync(p.mirror); } catch (e) { exists = false; }
+        const realOk = fs.existsSync(p.real);
+        lines.push(path.basename(p.mirror) + ' | ' + p.real + ' | ' + (gitBranch(p.real) || '(no git)')
+            + (exists ? '' : '  [未生成]') + (realOk ? '' : '  [真实路径不存在]'));
+    }
+    lines.push('');
+    lines.push('副本由 VSCode 扩展 Local File Bridge 自动维护：');
+    lines.push('  1) 修改副本 = 修改真实工程（双向自动同步，写回时加密落盘）');
+    lines.push('  2) VSCode 必须保持打开该工程，扩展宿主是唯一的解密/加密通道');
+    lines.push('  3) 不要在副本与真实工程里同时编辑同一个文件；git 操作请在真实工程里做');
+    const text = lines.join('\r\n');
+    await writePlain([{ p: path.join(MIRROR_ROOT, '_index.txt'), b64: Buffer.from(text, 'utf8').toString('base64') }], log);
+}
+
+async function ensureMirrorAndSync(log, buildMissing) {
+    const pairs = mirrorPairs();
+    if (!pairs.length) {
+        log.appendLine('ensure: no local root');
+        return;
+    }
+
+    for (const pair of pairs) {
+        await migrateLegacyMirror(log, pair.real, pair.mirror);
+        if (!fs.existsSync(pair.mirror)) {
+            if (buildMissing) {
+                log.appendLine('mirror not found, building: ' + pair.mirror);
+                await buildMirror(log, pair.real, pair.mirror);
+            } else {
+                log.appendLine('mirror not found, skipped (manual build only): ' + pair.mirror);
+            }
+        }
+    }
+
+    stopSync();
+    for (const pair of pairs) {
+        const s = startSync(log, pair.real, pair.mirror);
+        if (s) activeSyncs.push(s);
+        log.appendLine('active mirror: ' + pair.mirror);
+    }
+
+    try {
+        await writeIndex(log, pairs);
+    } catch (e) {
+        log.appendLine('index write failed: ' + ((e && e.message) || e));
+    }
+}
+
+function watchBranch(log) {
+    for (const w of branchWatchers) {
+        try { w.close(); } catch (e) { /* ignore */ }
+    }
+    branchWatchers = [];
+
+    for (const real of realRoots()) {
+        const head = path.join(real, '.git', 'HEAD');
+        if (!fs.existsSync(head)) continue;
+        try {
+            const w = fs.watch(head, () => {
+                branchCache.clear();
+                setTimeout(() => {
+                    log.appendLine('branch changed -> switching mirror');
+                    ensureMirrorAndSync(log).catch((e) => log.appendLine('switch failed: ' + ((e && e.message) || e)));
+                }, 1500);
+            });
+            branchWatchers.push(w);
+            log.appendLine('branch watcher: ' + head);
+        } catch (e) {
+            log.appendLine('branch watch failed: ' + ((e && e.message) || e));
+        }
+    }
+}
+
+const SKIP_SYNC_NAMES = ['.git', '.svn', 'node_modules', '.vscode', '.codebuddy'];
+
+/* ---------------- activation ---------------- */
+
+function activate(context) {
+    const log = vscode.window.createOutputChannel('Local File Bridge');
+    log.appendLine('activating build ' + BUILD);
+
+    const fsProvider = new PlainFileSystemProvider();
+    context.subscriptions.push(vscode.workspace.registerFileSystemProvider('plain', fsProvider, { isCaseSensitive: false }));
+    log.appendLine('plain: filesystem provider registered');
+
+    const server = http.createServer(handler());
+    server.on('error', (e) => log.appendLine('server error: ' + ((e && e.message) || e)));
+    server.listen(PORT, HOST, () => log.appendLine('listening on http://' + HOST + ':' + PORT));
+    context.subscriptions.push({ dispose: () => server.close() });
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.addPlainRoot', () => addPlainRoot(log)));
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.openActivePlain', async () => {
+        const ed = vscode.window.activeTextEditor;
+        if (!ed) {
+            vscode.window.showInformationMessage('先打开一个文件。');
+            return;
+        }
+        const doc = await vscode.workspace.openTextDocument(fromLocal(ed.document.uri.fsPath));
+        await vscode.window.showTextDocument(doc);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.openViewer', () => {
+        vscode.env.openExternal(vscode.Uri.parse('http://' + HOST + ':' + PORT + '/view'));
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.buildMirror', async () => {
+        await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: '构建明文副本…' },
+            async () => {
+                branchCache.clear();
+                for (const pair of mirrorPairs()) {
+                    await buildMirror(log, pair.real, pair.mirror);
+                }
+                await ensureMirrorAndSync(log);
+            }
+        );
+        vscode.window.showInformationMessage('明文副本已就绪：' + mirrorPairs().map((p) => p.mirror).join(' , '));
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.openMirror', async () => {
+        const pairs = mirrorPairs();
+        if (!pairs.length) {
+            vscode.window.showInformationMessage('当前没有工作区目录。');
+            return;
+        }
+        const items = pairs.map((p) => ({
+            label: path.basename(p.mirror),
+            description: p.real,
+            detail: fs.existsSync(p.mirror) ? '已就绪：' + p.mirror : '尚未生成：' + p.mirror,
+            mirror: p.mirror
+        }));
+        items.push({
+            label: '$(trash) 清理失效副本…',
+            description: '删除真实工程已不存在的副本目录',
+            action: 'clean'
+        });
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: '选择要打开的明文副本目录' });
+        if (!pick) return;
+        if (pick.action === 'clean') {
+            await vscode.commands.executeCommand('filebridge.cleanMirrors');
+            return;
+        }
+        try {
+            await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(pick.mirror));
+        } catch (e) {
+            vscode.env.openExternal(vscode.Uri.file(pick.mirror));
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('filebridge.cleanMirrors', async () => {
+        let ents = [];
+        try {
+            ents = await fs.promises.readdir(MIRROR_ROOT, { withFileTypes: true });
+        } catch (e) {
+            return;
+        }
+        const orphans = [];
+        for (const e of ents) {
+            if (!e.isDirectory()) continue;
+            const dir = path.join(MIRROR_ROOT, e.name);
+            let meta = null;
+            try {
+                meta = JSON.parse(await fs.promises.readFile(path.join(dir, '.mirror-meta.json'), 'utf8'));
+            } catch (err) { /* no meta */ }
+            const realOk = !!(meta && meta.real && fs.existsSync(meta.real));
+            if (!realOk) {
+                orphans.push({
+                    label: e.name,
+                    description: meta && meta.real ? '目标已不存在: ' + meta.real : '无归属信息',
+                    dir: dir
+                });
+            }
+        }
+        if (!orphans.length) {
+            vscode.window.showInformationMessage('没有失效副本，全部正常。');
+            return;
+        }
+        const picks = await vscode.window.showQuickPick(orphans, {
+            canPickMany: true,
+            placeHolder: '选择要删除的失效副本（只删副本，不动真实工程）'
+        });
+        if (!picks || !picks.length) return;
+        for (const p of picks) {
+            try {
+                await fs.promises.rm(p.dir, { recursive: true, force: true });
+            } catch (err) { /* ignore */ }
+        }
+        vscode.window.showInformationMessage('已删除 ' + picks.length + ' 个失效副本。');
+    }));
+
+    const bar2 = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    bar2.text = '$(sync) 重建副本';
+    bar2.tooltip = '把当前工程复制/刷新为明文副本（D:\\plain_view）';
+    bar2.command = 'filebridge.buildMirror';
+    bar2.show();
+    context.subscriptions.push(bar2);
+
+    const bar3 = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+    bar3.text = '$(folder-library) 副本';
+    bar3.tooltip = '查看/在资源管理器中打开已生成的明文副本';
+    bar3.command = 'filebridge.openMirror';
+
+    bar3.show();
+    context.subscriptions.push(bar3);
+
+    // 清理之前自动添加的 plain 虚拟根目录
+    setTimeout(() => {
+        try {
+            const folders = vscode.workspace.workspaceFolders || [];
+            const idx = folders.map((f, i) => (f.uri.scheme === 'plain' ? i : -1)).filter((i) => i >= 0);
+            if (idx.length) {
+                vscode.workspace.updateWorkspaceFolders(idx[0], idx.length);
+                log.appendLine('removed plain virtual root(s): ' + idx.length);
+            }
+        } catch (e) {
+            log.appendLine('cleanup plain root failed: ' + ((e && e.message) || e));
+        }
+    }, 1200);
+
+    setTimeout(async () => {
+        try {
+            await ensureMirrorAndSync(log, false);
+            watchBranch(log);
+        } catch (e) {
+            log.appendLine('auto sync failed: ' + ((e && e.message) || e));
+        }
+    }, 3000);
+}
+
+function deactivate() {
+    stopSync();
+    for (const w of branchWatchers) {
+        try { w.close(); } catch (e) { /* ignore */ }
+    }
+    branchWatchers = [];
+}
+
+module.exports = { activate, deactivate };

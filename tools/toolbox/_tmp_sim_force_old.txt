@@ -1,0 +1,5 @@
+        uint8_t x = OLED[oled_rank_count].X_LEN;
+        uint8_t y = OLED[oled_rank_count].Y_LEN;
+
+
+        if(SIM[i].state != 8)

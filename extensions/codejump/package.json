@@ -1,0 +1,30 @@
+{
+  "name": "codejump",
+  "displayName": "CodeJump",
+  "description": "Jump from a copied code reference (e.g. motor.c L491-L506) to file:line in the editor.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "codejump.jump", "title": "CodeJump: jump from clipboard reference" }
+    ],
+    "keybindings": [
+      { "command": "codejump.jump", "key": "ctrl+alt+g" }
+    ],
+    "configuration": {
+      "title": "CodeJump",
+      "properties": {
+        "codejump.roots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra absolute roots to search for files (besides workspace folders)."
+        }
+      }
+    }
+  }
+}

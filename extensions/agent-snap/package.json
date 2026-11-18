@@ -1,0 +1,68 @@
+{
+  "name": "agent-snap",
+  "displayName": "Agent Snap (\u6865\u6539\u5feb\u7167/\u6279\u6b21\u5bf9\u6bd4/\u56de\u9000)",
+  "description": "bridge-edit.py \u6bcf\u6b21\u7ecf\u6865\u6539\u52a8\u540e\u6309\u6279\u6b21\u805a\u5408\uff0c\u6bcf\u6279\u5b8c\u6210\u540e\u51fa\u4e00\u6b21\u6574\u4f53\u5bf9\u6bd4\uff0c\u53ef\u56de\u9000\u4efb\u610f\u65f6\u70b9",
+  "publisher": "local",
+  "version": "0.0.9",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Agent Snap",
+      "properties": {
+        "agentSnap.backupDir": {
+          "type": "string",
+          "default": "D:\\Codebuddy\\backup\\bridge-edit",
+          "description": "snapshot root written by bridge-edit.py"
+        },
+        "agentSnap.batchGapSec": {
+          "type": "number",
+          "default": 120,
+          "description": "\u76f8\u90bb\u4e24\u6b21\u6539\u52a8\u95f4\u9694\u5c0f\u4e8e\u6b64\u79d2\u6570\u5219\u5f52\u4e3a\u540c\u4e00\u6279\u6b21"
+        },
+        "agentSnap.autoOpenQuietSec": {
+          "type": "number",
+          "default": 4,
+          "description": "\u6279\u6b21\u9759\u9ed8\u8be5\u79d2\u6570\u540e\u81ea\u52a8\u5f39\u51fa\u8be5\u6279\u6b21\u5bf9\u6bd4\uff080=\u5173\u95ed\u81ea\u52a8\u5f39\u51fa\uff09"
+        },
+        "agentSnap.scopeToWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "\u53ea\u663e\u793a\u5f53\u524d\u5de5\u7a0b\uff08\u5de5\u4f5c\u533a\uff09\u5185\u6587\u4ef6\u7684\u5feb\u7167\uff1b\u5173\u95ed\u5219\u663e\u793a\u6240\u6709\u5de5\u7a0b"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "agentSnap", "title": "Agent \u6539\u52a8\u5386\u53f2", "icon": "media/icon.svg" }
+      ]
+    },
+    "views": {
+      "agentSnap": [
+        { "id": "agentSnapHistory", "name": "\u6539\u52a8\u8bb0\u5f55", "when": "true" }
+      ]
+    },
+    "commands": [
+      { "command": "agentSnap.refresh", "title": "Agent Snap: \u5237\u65b0", "icon": "$(refresh)" },
+      { "command": "agentSnap.openBatch", "title": "Agent Snap: \u67e5\u770b\u672c\u6279\u6b21\u5dee\u5f02", "icon": "$(diff)" },
+      { "command": "agentSnap.openStep", "title": "Agent Snap: \u67e5\u770b\u8be5\u6b21\u6539\u52a8", "icon": "$(diff)" },
+      { "command": "agentSnap.openDiff", "title": "Agent Snap: \u4e0e\u5f53\u524d\u5bf9\u6bd4", "icon": "$(git-compare)" },
+      { "command": "agentSnap.rollback", "title": "Agent Snap: \u56de\u9000\u5230\u6b64\u5feb\u7167", "icon": "$(discard)" },
+      { "command": "agentSnap.rollbackLast", "title": "Agent Snap: \u56de\u9000\u6700\u8fd1\u4e00\u6b21\u6539\u52a8" },
+      { "command": "agentSnap.showPanel", "title": "Agent Snap: \u6253\u5f00\u6539\u52a8\u5386\u53f2\u9762\u677f" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "agentSnap.refresh", "when": "view == agentSnapHistory", "group": "navigation" }
+      ],
+      "view/item/context": [
+        { "command": "agentSnap.openBatch", "when": "view == agentSnapHistory && viewItem == snapfile", "group": "inline@1" },
+        { "command": "agentSnap.rollback", "when": "view == agentSnapHistory && viewItem == snap", "group": "inline@1" },
+        { "command": "agentSnap.openDiff", "when": "view == agentSnapHistory && viewItem == snap", "group": "inline@2" },
+        { "command": "agentSnap.openStep", "when": "view == agentSnapHistory && viewItem == snap", "group": "context" }
+      ]
+    }
+  }
+}

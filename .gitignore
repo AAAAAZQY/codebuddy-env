@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.vsix
+node_modules/
+out/
+dist/
+.DS_Store

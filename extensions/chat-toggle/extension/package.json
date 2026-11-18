@@ -1,0 +1,65 @@
+{
+  "name": "chat-toggle",
+  "displayName": "对话开关",
+  "description": "从活动栏图标或状态栏按钮一键显示/隐藏对话面板",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "chatToggle.toggle",
+        "title": "切换对话面板",
+        "category": "对话开关",
+        "icon": "$(comment-discussion)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "chatToggleSidebar",
+          "title": "对话开关",
+          "icon": "media/chat.svg"
+        }
+      ]
+    },
+    "views": {
+      "chatToggleSidebar": [
+        {
+          "id": "chatToggleView",
+          "name": "对话开关"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "对话开关",
+      "properties": {
+        "chatToggle.target": {
+          "type": "string",
+          "enum": [
+            "auxiliary",
+            "primary",
+            "both"
+          ],
+          "enumDescriptions": [
+            "切换辅助侧边栏（对话面板通常在这一栏）",
+            "切换主侧边栏（资源管理器那一栏）",
+            "两栏一起切换"
+          ],
+          "default": "auxiliary",
+          "description": "点击图标时要切换哪一栏"
+        }
+      }
+    }
+  }
+}

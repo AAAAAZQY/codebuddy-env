@@ -1,0 +1,205 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""bridge-verify.py - post-write verification for DLP-encrypted project files.
+
+Solidifies the checks that used to be run by hand from the chat:
+  - delayed re-read (the DLP container may rewrite a file AFTER write returns)
+  - independent python process view (cross-process view split)
+  - comparison against manifest.sha_after / size_after
+  - real line diff vs the pre-edit snapshot (+N/-M, duplicate C definitions)
+  - optional at-rest cipher check (--atrest, slower)
+
+usage:
+  python bridge-verify.py <path> --snapshot <snap_dir> [--delay 3.0] [--atrest]
+  python bridge-verify.py <path>              # re-check against newest snapshot
+  python bridge-edit.py  verify <path>       # same, through bridge-edit
+"""
+import argparse, difflib, hashlib, json, os, re, subprocess, sys, time
+from collections import Counter
+
+BACKUP_DIR = r'D:\Codebuddy\backup\bridge-edit'
+NODE_EXE = r'D:\Codebuddy\CodeBuddy CN\CodeBuddy CN.exe'
+BRIDGE_EDIT = r'D:\Codebuddy\toolbox\bridge-edit.py'
+
+
+def sha(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def child_view(p):
+    """Read the same path from a fresh python process (a different DLP view)."""
+    code = ("import hashlib,sys;"
+            "d=open(sys.argv[1],'rb').read();"
+            "sys.stdout.write(hashlib.sha256(d).hexdigest()+' '+str(len(d)))")
+    try:
+        r = subprocess.run([sys.executable, '-c', code, p],
+                           capture_output=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        parts = r.stdout.decode('ascii', 'replace').strip().split()
+        return (parts[0], int(parts[1]))
+    except Exception:
+        return None
+
+
+def atrest_is_cipher(p):
+    code = ("const fs=require('fs');const b=fs.readFileSync(process.argv[1]);"
+            "process.stdout.write(b.slice(0,12).toString('latin1'))")
+    env = dict(os.environ)
+    env['ELECTRON_RUN_AS_NODE'] = '1'
+    try:
+        r = subprocess.run([NODE_EXE, '-e', code, p],
+                           capture_output=True, env=env, timeout=30)
+        return r.stdout.decode('latin1', 'replace').startswith('%TSD')
+    except Exception:
+        return None
+
+
+def find_newest_snapshot(p):
+    if not os.path.isdir(BACKUP_DIR):
+        return None
+    target = os.path.normcase(os.path.abspath(p))
+    best = None
+    for name in os.listdir(BACKUP_DIR):
+        d = os.path.join(BACKUP_DIR, name)
+        mf = os.path.join(d, 'manifest.json')
+        if not os.path.isfile(mf):
+            continue
+        try:
+            with open(mf, 'r', encoding='utf-8') as f:
+                m = json.load(f)
+            if os.path.normcase(os.path.abspath(m.get('real_path', ''))) == target:
+                if best is None or name > best[0]:
+                    best = (name, d, m)
+        except Exception:
+            continue
+    return None if best is None else (best[1], best[2])
+
+
+def diff_stats(pre_bytes, cur_bytes):
+    a = pre_bytes.decode('gbk', 'replace').splitlines()
+    b = cur_bytes.decode('gbk', 'replace').splitlines()
+    d = [x for x in difflib.unified_diff(a, b, n=0, lineterm='')
+         if (x.startswith('+') and not x.startswith('+++')) or
+            (x.startswith('-') and not x.startswith('---'))]
+    return sum(1 for x in d if x.startswith('+')), sum(1 for x in d if x.startswith('-'))
+
+
+def def_names(b):
+    out = []
+    for line in b.decode('gbk', 'replace').splitlines():
+        s = line.strip()
+        if (s.endswith(')') and '(' in s and ';' not in s and
+                not s.startswith(('if', 'for', 'while', 'switch', 'return', '/*', '*', '//'))):
+            n = s.split('(')[0].strip().split()
+            if n and re.match(r'^[A-Za-z_]\w*$', n[-1]):
+                out.append(n[-1])
+    return out
+
+
+def new_duplicate_defs(pre_bytes, cur_bytes):
+    a, b = Counter(def_names(pre_bytes)), Counter(def_names(cur_bytes))
+    return sorted(n for n, c in b.items() if c > a.get(n, 0))
+
+
+def restore_hint(p, snap_dir, man):
+    base = man.get('base') or os.path.basename(p)
+    return ('python %s write "%s" --from "%s" --bytes'
+            % (BRIDGE_EDIT, p, os.path.join(snap_dir, base)))
+
+
+def report_fail(p, snap_dir, man, reason, expected, actual, child, delay):
+    print('[VERIFY FAIL] %s' % p)
+    print('  reason       : %s' % reason)
+    print('  expected sha : %s' % (expected[0][:8] if expected else '-'))
+    print('  actual   sha : %s' % (actual[0][:8] if actual else '-'))
+    print('  child    sha : %s' % (child[0][:8] if child else '-'))
+    print('  expected size: %s   actual size: %s' %
+          (expected[1] if expected else '-', actual[1] if actual else '-'))
+    print('  delay        : %.1fs' % delay)
+    print('  snapshot     : %s' % (snap_dir or '-'))
+    if snap_dir and man:
+        print('  [RESTORE] %s' % restore_hint(p, snap_dir, man))
+    print('  DO NOT auto-rewrite. Stop and report to the user.')
+    return 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description='verify a DLP-encrypted project file after write')
+    ap.add_argument('path')
+    ap.add_argument('--snapshot')
+    ap.add_argument('--delay', type=float, default=3.0)
+    ap.add_argument('--atrest', action='store_true')
+    a = ap.parse_args()
+
+    p = a.path
+    snap_dir, man = a.snapshot, None
+    if snap_dir:
+        mf = os.path.join(snap_dir, 'manifest.json')
+        if not os.path.isfile(mf):
+            print('[VERIFY FAIL] manifest not found: %s' % mf)
+            return 1
+        with open(mf, 'r', encoding='utf-8') as f:
+            man = json.load(f)
+    else:
+        found = find_newest_snapshot(p)
+        if not found:
+            print('[VERIFY FAIL] no snapshot found for %s (cannot determine expected sha)' % p)
+            return 1
+        snap_dir, man = found
+
+    expected = (man.get('sha_after'), man.get('size_after'))
+    if not expected[0]:
+        print('[VERIFY FAIL] manifest has no sha_after')
+        return 1
+
+    if a.delay > 0:
+        time.sleep(a.delay)
+    try:
+        with open(p, 'rb') as f:
+            cur = f.read()
+    except Exception as e:
+        return report_fail(p, snap_dir, man, 'cannot read file: %s' % e,
+                           expected, None, None, a.delay)
+    actual = (sha(cur), len(cur))
+    child = child_view(p)
+
+    if actual[0] != expected[0] or actual[1] != expected[1]:
+        return report_fail(p, snap_dir, man,
+                           'delayed re-read differs from manifest.sha_after '
+                           '(DLP container rewrote the file after write returned)',
+                           expected, actual, child, a.delay)
+    if child is None:
+        return report_fail(p, snap_dir, man, 'independent python child view unavailable',
+                           expected, actual, child, a.delay)
+    if child[0] != expected[0] or child[1] != expected[1]:
+        return report_fail(p, snap_dir, man,
+                           'cross-process view split (child sees different bytes)',
+                           expected, actual, child, a.delay)
+
+    base = os.path.join(snap_dir, man.get('base') or os.path.basename(p))
+    pre = None
+    if os.path.isfile(base):
+        with open(base, 'rb') as f:
+            pre = f.read()
+    adds, dels = diff_stats(pre, cur) if pre is not None else (-1, -1)
+    dups = new_duplicate_defs(pre, cur) if pre is not None else []
+    if dups:
+        return report_fail(p, snap_dir, man,
+                           'duplicate C function definitions appeared: %s' % ','.join(dups[:5]),
+                           expected, actual, child, a.delay)
+
+    if a.atrest and atrest_is_cipher(p) is not True:
+        return report_fail(p, snap_dir, man, 'at-rest encryption check failed',
+                           expected, actual, child, a.delay)
+
+    print('[VERIFY OK] %s' % p)
+    print('  sha=%s  size=%d  views=2/2  delay=%.1fs  diff=+%d/-%d  atrest=%s  snapshot=%s'
+          % (actual[0][:8], actual[1], a.delay, adds, dels,
+             ('cipher' if atrest_is_cipher(p) else 'unknown') if a.atrest else 'skipped',
+             snap_dir))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

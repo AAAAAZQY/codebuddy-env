@@ -1,0 +1,76 @@
+{
+  "name": "cd11-diff",
+  "displayName": "CD11 改动对比",
+  "description": "对比副本当前源码与最初版基线，列出改动文件并查看逐行差异",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cd11Diff.refresh",
+        "title": "CD11: 刷新改动列表",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cd11Diff.openDiff",
+        "title": "CD11: 打开差异"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cd11DiffView",
+          "title": "CD11 改动",
+          "icon": "icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cd11DiffView": [
+        {
+          "id": "cd11Diff.files",
+          "name": "改动文件"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "cd11Diff.refresh",
+          "when": "view == cd11Diff.files",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CD11 改动对比",
+      "properties": {
+        "cd11Diff.gitDir": {
+          "type": "string",
+          "default": "D:\\Codebuddy\\repos\\cd11-shadow",
+          "description": "基线仓库目录（git --git-dir，放在 DLP 之外）"
+        },
+        "cd11Diff.workTree": {
+          "type": "string",
+          "default": "d:\\plain_view\\CD11\\cd11-main_v2-source_code_ptz",
+          "description": "当前副本源码目录（git --work-tree）"
+        },
+        "cd11Diff.baselineRef": {
+          "type": "string",
+          "default": "HEAD",
+          "description": "基线提交引用，默认 HEAD（基线仓库里唯一一次提交）"
+        }
+      }
+    }
+  }
+}

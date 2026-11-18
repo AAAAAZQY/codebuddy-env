@@ -1,0 +1,11 @@
+        uint8_t x = OLED[oled_rank_count].X_LEN;
+        uint8_t y = OLED[oled_rank_count].Y_LEN;
+
+
+        SIM[i].flag   = 1;
+        SIM[i].mode   = (i == 0) ? 4 : 5;
+        SIM[i].net    = 0;
+        SIM[i].signal = 4;
+        SIM[i].state  = 1;
+
+        if(SIM[i].state != 8)

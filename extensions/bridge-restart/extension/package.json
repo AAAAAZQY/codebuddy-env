@@ -1,0 +1,75 @@
+{
+  "name": "bridge-restart",
+  "displayName": "重启桥 (FileBridge)",
+  "description": "状态栏一键重启 filebridge，并实时显示桥在线状态",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "bridgeRestart.restart",
+        "title": "重启桥 (FileBridge)",
+        "category": "桥",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "bridgeRestart.status",
+        "title": "查看桥状态与日志",
+        "category": "桥",
+        "icon": "$(radio-tower)"
+      }
+    ],
+    "configuration": {
+      "title": "重启桥 (FileBridge)",
+      "properties": {
+        "bridgeRestart.codeExe": {
+          "type": "string",
+          "default": "",
+          "description": "Code.exe 路径；留空则用扩展宿主自身的 execPath（推荐）"
+        },
+        "bridgeRestart.bridgeJs": {
+          "type": "string",
+          "default": "",
+          "description": "bridge-oneway.js 路径；留空则用 %USERPROFILE%\\.codebuddy-bridge\\bridge-oneway.js"
+        },
+        "bridgeRestart.mirrorRoot": {
+          "type": "string",
+          "default": "D:\\plain_view",
+          "description": "副本根目录，用于自动收集 .mirror-meta.json 中的 real 工程路径"
+        },
+        "bridgeRestart.port": {
+          "type": "number",
+          "default": 37821,
+          "description": "桥监听端口，同时用于探活"
+        },
+        "bridgeRestart.pollIntervalMs": {
+          "type": "number",
+          "default": 15000,
+          "description": "状态栏探活周期（毫秒），最小 3000"
+        },
+        "bridgeRestart.extraRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "额外传给桥的 real 工程根目录（可选）"
+        },
+        "bridgeRestart.autoRestart": {
+          "type": "boolean",
+          "default": false,
+          "description": "探活发现桥断开时是否自动拉起（默认关闭，手动点按钮为准）"
+        }
+      }
+    }
+  }
+}
